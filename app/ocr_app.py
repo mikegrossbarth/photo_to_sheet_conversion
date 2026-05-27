@@ -51,6 +51,7 @@ DISPLAY_COLUMNS = (
     "grade",
     "confidence",
 )
+READ_ONLY_COLUMNS = {"status", "quality", "file", "card_index"}
 
 COLUMN_HEADINGS = {
     "status": "Status",
@@ -110,6 +111,8 @@ class OcrSpreadsheetApp(tk.Tk):
         self.stop_requested = False
         self.client = None
         self.summary_var = tk.StringVar(value="0 photos | 0 detected | 0 readable")
+        self.cell_editor: tk.Entry | None = None
+        self.editing_cell: tuple[str, str] | None = None
 
         self._load_env()
         self._build_ui()
@@ -210,6 +213,7 @@ class OcrSpreadsheetApp(tk.Tk):
         self.tree.tag_configure("detected", background=palette["detected"])
         self.tree.tag_configure("error", background=palette["error"])
         self.tree.tag_configure("queued", background=palette["panel"])
+        self.tree.bind("<Double-1>", self._begin_cell_edit)
         self.tree.grid(row=0, column=0, sticky="nsew")
 
         y_scrollbar = ttk.Scrollbar(content, orient=tk.VERTICAL, command=self.tree.yview)
@@ -419,6 +423,73 @@ class OcrSpreadsheetApp(tk.Tk):
                 content_width = max(content_width, len(value) * 7 + 28)
             width = max(min_width, min(content_width, max_width))
             self.tree.column(col, width=width, minwidth=min_width)
+
+    def _begin_cell_edit(self, event) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        row_id = self.tree.identify_row(event.y)
+        column_id = self.tree.identify_column(event.x)
+        if not row_id or not column_id:
+            return
+        col_index = int(column_id.replace("#", "")) - 1
+        if col_index < 0 or col_index >= len(DISPLAY_COLUMNS):
+            return
+        column = DISPLAY_COLUMNS[col_index]
+        if column in READ_ONLY_COLUMNS:
+            return
+        bbox = self.tree.bbox(row_id, column_id)
+        if not bbox:
+            return
+        self._finish_cell_edit(save=False)
+
+        x, y, width, height = bbox
+        current_value = self.tree.set(row_id, column)
+        editor = tk.Entry(self.tree, font=("Segoe UI", 10), relief=tk.SOLID, borderwidth=1)
+        editor.insert(0, current_value)
+        editor.select_range(0, tk.END)
+        editor.focus_set()
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.bind("<Return>", lambda _event: self._finish_cell_edit(save=True))
+        editor.bind("<Escape>", lambda _event: self._finish_cell_edit(save=False))
+        editor.bind("<FocusOut>", lambda _event: self._finish_cell_edit(save=True))
+        self.cell_editor = editor
+        self.editing_cell = (row_id, column)
+
+    def _finish_cell_edit(self, save: bool) -> None:
+        if not self.cell_editor or not self.editing_cell:
+            return
+        editor = self.cell_editor
+        row_id, column = self.editing_cell
+        value = editor.get()
+        editor.destroy()
+        self.cell_editor = None
+        self.editing_cell = None
+
+        if not save or column in READ_ONLY_COLUMNS:
+            return
+        try:
+            row_index = int(row_id)
+        except ValueError:
+            return
+        if row_index < 0 or row_index >= len(self.rows):
+            return
+
+        normalized = self._normalize_manual_value(column, value)
+        self.rows[row_index].data[column] = normalized
+        self.rows[row_index].data["quality"] = self._quality_score(self.rows[row_index].data)
+        self._sort_rows()
+        self._refresh_table()
+        self._update_summary()
+        self.status_var.set(f"Updated {COLUMN_HEADINGS[column]} for selected row.")
+
+    def _normalize_manual_value(self, column: str, value: str) -> str:
+        value = str(value or "").strip()
+        if column == "cert_number":
+            return "".join(ch for ch in value if ch.isdigit())
+        return value.upper()
 
     def _row_tag(self, index: int) -> str:
         status = str(self.rows[index].data.get("status", "") or "").lower()
