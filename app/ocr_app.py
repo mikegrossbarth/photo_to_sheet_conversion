@@ -45,9 +45,9 @@ DISPLAY_COLUMNS = (
     "grading_company",
     "cert_number",
     "player",
+    "attributes",
     "year",
     "set",
-    "attributes",
     "grade",
     "confidence",
 )
@@ -210,11 +210,15 @@ class OcrSpreadsheetApp(tk.Tk):
         self.tree.tag_configure("detected", background=palette["detected"])
         self.tree.tag_configure("error", background=palette["error"])
         self.tree.tag_configure("queued", background=palette["panel"])
-        self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        self.tree.grid(row=0, column=0, sticky="nsew")
 
-        scrollbar = ttk.Scrollbar(content, orient=tk.VERTICAL, command=self.tree.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        y_scrollbar = ttk.Scrollbar(content, orient=tk.VERTICAL, command=self.tree.yview)
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar = ttk.Scrollbar(content, orient=tk.HORIZONTAL, command=self.tree.xview)
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+        self.tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
 
         bottom = ttk.Frame(self, style="App.TFrame", padding=(16, 0, 16, 16))
         bottom.pack(fill=tk.X)
