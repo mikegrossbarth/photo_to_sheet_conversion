@@ -4,11 +4,13 @@ Desktop batch OCR tool for graded card photos. It uses the `live-comps` certific
 
 ## First-time setup
 
-1. Double-click `install_dependencies.bat`.
+1. Double-click `install_dependencies.bat`. If Python is missing, the installer downloads Python for the current Windows user, creates a local `.venv` folder, and installs the app dependencies.
 2. Copy `app\.env.example` to `app\.env`.
 3. Put your Gemini key in `app\.env` as `GOOGLE_API_KEY=...`.
 
 If you already have a configured `live-comps\.env`, the app will also read that automatically.
+
+If the installer closes after showing an error, open `install_dependencies.bat` again from File Explorer and read the message above "Press any key to continue." The most common issue is a blocked Python download or no internet connection.
 
 ## Open the app
 

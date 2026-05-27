@@ -1,9 +1,9 @@
 .env
 app/.env
+.venv/
 outputs/
 vendor/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
