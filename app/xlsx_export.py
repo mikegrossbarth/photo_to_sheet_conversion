@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import html
+import re
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable
+
+
+ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean(value) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    return ILLEGAL_XML_CHARS.sub("", text)
+
+
+def _cell_ref(row_index: int, col_index: int) -> str:
+    letters = ""
+    n = col_index + 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"{letters}{row_index + 1}"
+
+
+def _sheet_xml(headers: list[str], rows: list[dict], keys: list[str]) -> str:
+    all_rows: list[list[str]] = [headers]
+    for row in rows:
+        all_rows.append([_clean(row.get(key, "")) for key in keys])
+
+    xml_rows = []
+    for row_idx, values in enumerate(all_rows):
+        cells = []
+        for col_idx, value in enumerate(values):
+            escaped = html.escape(_clean(value), quote=True)
+            cells.append(
+                f'<c r="{_cell_ref(row_idx, col_idx)}" t="inlineStr"><is><t>{escaped}</t></is></c>'
+            )
+        xml_rows.append(f'<row r="{row_idx + 1}">{"".join(cells)}</row>')
+
+    widths = []
+    for col_idx, header in enumerate(headers):
+        max_len = len(header)
+        for row in all_rows[1:]:
+            if col_idx < len(row):
+                max_len = max(max_len, len(str(row[col_idx])))
+        width = min(max(max_len + 2, 10), 48)
+        widths.append(f'<col min="{col_idx + 1}" max="{col_idx + 1}" width="{width}" customWidth="1"/>')
+
+    dimension = f"A1:{_cell_ref(max(len(all_rows) - 1, 0), len(headers) - 1)}"
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<dimension ref="{dimension}"/>'
+        '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        f'<cols>{"".join(widths)}</cols>'
+        f'<sheetData>{"".join(xml_rows)}</sheetData>'
+        '<autoFilter ref="' + dimension + '"/>'
+        '</worksheet>'
+    )
+
+
+def write_xlsx(path: Path, rows: Iterable[dict]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = list(rows)
+    keys = [
+        "source_file",
+        "quality",
+        "card_index",
+        "position",
+        "grading_company",
+        "cert_number",
+        "player",
+        "year",
+        "set",
+        "card_number",
+        "parallel",
+        "subset",
+        "grade",
+        "category",
+        "confidence",
+        "is_graded_slab",
+        "label_text",
+        "status",
+        "error",
+    ]
+    headers = [
+        "Source Photo",
+        "Quality Score",
+        "Card #",
+        "Position",
+        "Grading Company",
+        "Certification Number",
+        "Player / Subject",
+        "Year",
+        "Set",
+        "Card Number",
+        "Parallel",
+        "Subset",
+        "Grade",
+        "Category",
+        "Confidence",
+        "Is Graded Slab",
+        "Raw Label Text",
+        "Status",
+        "Error",
+    ]
+
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+        '</Types>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+        '</Relationships>'
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Cards" sheetId="1" r:id="rId1"/></sheets>'
+        '</workbook>'
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+    styles = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+        '</styleSheet>'
+    )
+    core = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" '
+        'xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        '<dc:creator>OCR Photos to Spreadsheet</dc:creator>'
+        f'<dcterms:created xsi:type="dcterms:W3CDTF">{now}</dcterms:created>'
+        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{now}</dcterms:modified>'
+        '</cp:coreProperties>'
+    )
+    app = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+        'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+        '<Application>OCR Photos to Spreadsheet</Application></Properties>'
+    )
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", root_rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", _sheet_xml(headers, rows, keys))
+        zf.writestr("xl/styles.xml", styles)
+        zf.writestr("docProps/core.xml", core)
+        zf.writestr("docProps/app.xml", app)
+    return path
