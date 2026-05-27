@@ -63,6 +63,8 @@ CROP_CARD_PROMPT = (
     "If the slab/card holder is visible but label text is unreadable, keep is_graded_slab true, set confidence low, and leave unreadable fields blank. "
     "Do not reject a crop just because the cert number cannot be read. "
     "Read the grading company, certification number, player or subject, year, set, card number, parallel, subset, grade, broad category, and raw label/card text. "
+    "Also preserve descriptor lines and attributes printed below or near the player/subject name on the slab label, such as GRAY BACK, REFRACTOR, SILVER, AUTO, ROOKIE, EX+, MK, OC, PD, qualifier notes, variation names, insert names, or other label details. "
+    "Put those extra descriptor details in attributes as a concise semicolon-separated string. Do not drop them even if they do not fit player, set, card_number, parallel, subset, or grade. "
     "Supported grading companies include PSA, BGS, CGC, SGC, TAG, and unknown. "
     "Carefully distinguish grading company by label style and visible text: PSA labels are usually red/white with PSA logo; "
     "BGS/Beckett labels often show BGS, Beckett, subgrades, or a numeric grade box; "
@@ -73,7 +75,7 @@ CROP_CARD_PROMPT = (
     "Only include a player/year/set/grade when the text is actually visible or nearly certain from the crop; prefer blanks over hallucination. "
     "Return JSON only with this exact shape: "
     '{"mode": "crop", "is_graded_slab": bool, "grading_company": str, "cert_number": str, "player": str, "year": str, '
-    '"set": str, "card_number": str, "parallel": str, "subset": str, "grade": str, "category": str, "confidence": str, "label_text": str}. '
+    '"set": str, "card_number": str, "parallel": str, "subset": str, "attributes": str, "grade": str, "category": str, "confidence": str, "label_text": str}. '
     "confidence must be one of: high, medium, low."
 )
 
@@ -320,6 +322,7 @@ def _normalize_card(card: dict, fallback_index: int) -> dict:
         "card_number",
         "parallel",
         "subset",
+        "attributes",
         "grade",
         "category",
         "confidence",
@@ -362,6 +365,7 @@ def _identify_crop_sync(gclient: genai.Client, crop_b64: str) -> dict:
     result["card_number"] = str(result.get("card_number", "") or "").strip()
     result["parallel"] = str(result.get("parallel", "") or "").strip()
     result["subset"] = str(result.get("subset", "") or "").strip()
+    result["attributes"] = str(result.get("attributes", "") or "").strip()
     result["category"] = str(result.get("category", "") or "").strip().lower()
     result["label_text"] = str(result.get("label_text", "") or "").strip()
 
@@ -396,6 +400,7 @@ def _normalize_display_text(result: dict) -> dict:
         "card_number",
         "parallel",
         "subset",
+        "attributes",
         "grade",
         "category",
         "confidence",

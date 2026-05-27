@@ -47,6 +47,7 @@ DISPLAY_COLUMNS = (
     "player",
     "year",
     "set",
+    "attributes",
     "grade",
     "confidence",
 )
@@ -62,6 +63,7 @@ COLUMN_HEADINGS = {
     "player": "Player / Subject",
     "year": "Year",
     "set": "Set",
+    "attributes": "Attributes",
     "grade": "Grade",
     "confidence": "Confidence",
 }
@@ -77,6 +79,7 @@ COLUMN_WIDTHS = {
     "player": (150, 260),
     "year": (64, 92),
     "set": (150, 300),
+    "attributes": (150, 320),
     "grade": (64, 84),
     "confidence": (90, 120),
 }
@@ -319,7 +322,7 @@ class OcrSpreadsheetApp(tk.Tk):
                         "error": "",
                     }]
                 for card in cards:
-                    has_value = any(card.get(key) for key in ("cert_number", "player", "year", "set", "grade", "label_text"))
+                    has_value = any(card.get(key) for key in ("cert_number", "player", "year", "set", "attributes", "grade", "label_text"))
                     if card.get("is_graded_slab", True):
                         card["status"] = "Done" if has_value else "Detected"
                     else:
@@ -443,6 +446,8 @@ class OcrSpreadsheetApp(tk.Tk):
             score += 8
         if data.get("set"):
             score += 7
+        if data.get("attributes"):
+            score += 6
         if data.get("grade"):
             score += 7
         confidence = str(data.get("confidence", "") or "").lower()
@@ -516,6 +521,7 @@ class OcrSpreadsheetApp(tk.Tk):
             "player",
             "year",
             "set",
+            "attributes",
             "card_number",
             "parallel",
             "subset",
