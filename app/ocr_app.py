@@ -27,7 +27,7 @@ from live_comps_ocr.cert_extraction import (
     TemporaryModelUnavailable,
 )
 from multi_card_extraction import identify_cards_sync
-from xlsx_export import write_xlsx
+from xlsx_export import EXPORT_HEADERS, EXPORT_KEYS, build_export_rows, write_xlsx
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -586,33 +586,11 @@ class OcrSpreadsheetApp(tk.Tk):
 
     def _write_csv(self, path: Path, rows: list[dict]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        keys = [
-            "source_file",
-            "quality",
-            "card_index",
-            "position",
-            "grading_company",
-            "cert_number",
-            "player",
-            "year",
-            "set",
-            "attributes",
-            "card_number",
-            "parallel",
-            "subset",
-            "grade",
-            "category",
-            "confidence",
-            "is_graded_slab",
-            "label_text",
-            "status",
-            "error",
-        ]
         with path.open("w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.DictWriter(handle, fieldnames=keys)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({key: row.get(key, "") for key in keys})
+            writer = csv.writer(handle)
+            writer.writerow(EXPORT_HEADERS)
+            for row in build_export_rows(rows):
+                writer.writerow([row.get(key, "") for key in EXPORT_KEYS])
 
     def clear_rows(self) -> None:
         if self.worker and self.worker.is_alive():

@@ -10,12 +10,80 @@ from typing import Iterable
 
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
+EXPORT_KEYS = [
+    "cert_number",
+    "card_description",
+    "card_number",
+    "player",
+    "year",
+    "set",
+    "subset",
+    "parallel",
+    "grading_company",
+    "grade",
+    "category",
+    "confidence",
+    "is_graded_slab",
+    "label_text",
+    "position",
+    "source_file",
+    "quality",
+]
+
+EXPORT_HEADERS = [
+    "Certification Number",
+    "Card Description",
+    "Card Number",
+    "Player / Subject",
+    "Year",
+    "Set",
+    "Subset",
+    "Parallel",
+    "Grading Company",
+    "Grade",
+    "Category",
+    "Confidence",
+    "Is Graded Slab",
+    "Raw Label Text",
+    "Position",
+    "Source Photo",
+    "Quality Score",
+]
+
 
 def _clean(value) -> str:
     if value is None:
         return ""
     text = str(value)
     return ILLEGAL_XML_CHARS.sub("", text)
+
+
+def _clean_part(value) -> str:
+    return re.sub(r"\s+", " ", _clean(value)).strip()
+
+
+def build_card_description(row: dict) -> str:
+    parts = []
+    seen = set()
+    for key in ("year", "set", "player", "parallel", "subset", "attributes", "grading_company", "grade"):
+        value = _clean_part(row.get(key, ""))
+        if not value:
+            continue
+        marker = value.upper()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        parts.append(value)
+    return " ".join(parts)
+
+
+def build_export_rows(rows: Iterable[dict]) -> list[dict]:
+    export_rows = []
+    for row in rows:
+        export_row = {key: row.get(key, "") for key in EXPORT_KEYS}
+        export_row["card_description"] = build_card_description(row)
+        export_rows.append(export_row)
+    return export_rows
 
 
 def _cell_ref(row_index: int, col_index: int) -> str:
@@ -67,51 +135,9 @@ def _sheet_xml(headers: list[str], rows: list[dict], keys: list[str]) -> str:
 
 def write_xlsx(path: Path, rows: Iterable[dict]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = list(rows)
-    keys = [
-        "source_file",
-        "quality",
-        "card_index",
-        "position",
-        "grading_company",
-        "cert_number",
-        "player",
-        "year",
-        "set",
-        "card_number",
-        "parallel",
-        "subset",
-        "attributes",
-        "grade",
-        "category",
-        "confidence",
-        "is_graded_slab",
-        "label_text",
-        "status",
-        "error",
-    ]
-    headers = [
-        "Source Photo",
-        "Quality Score",
-        "Card #",
-        "Position",
-        "Grading Company",
-        "Certification Number",
-        "Player / Subject",
-        "Year",
-        "Set",
-        "Card Number",
-        "Parallel",
-        "Subset",
-        "Attributes",
-        "Grade",
-        "Category",
-        "Confidence",
-        "Is Graded Slab",
-        "Raw Label Text",
-        "Status",
-        "Error",
-    ]
+    rows = build_export_rows(rows)
+    keys = EXPORT_KEYS
+    headers = EXPORT_HEADERS
 
     now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     content_types = (
