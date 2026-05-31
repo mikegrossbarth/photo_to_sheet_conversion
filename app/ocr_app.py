@@ -539,11 +539,15 @@ class OcrSpreadsheetApp(tk.Tk):
             row.data["quality"] = self._quality_score(row.data)
         self.rows.sort(
             key=lambda row: (
+                -self._confidence_rank(row.data.get("confidence", "")),
                 -int(row.data.get("quality") or 0),
                 row.path.name.lower(),
                 int(row.data.get("card_index") or 9999),
             )
         )
+
+    def _confidence_rank(self, confidence: str) -> int:
+        return {"HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(str(confidence or "").upper(), 0)
 
     def _first_row_index_for_path(self, path: Path) -> int | None:
         resolved = Path(path).resolve()
