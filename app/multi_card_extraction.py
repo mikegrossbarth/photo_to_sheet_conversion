@@ -21,6 +21,14 @@ from live_comps_ocr.cert_extraction import (
     _parse_model_json,
     _strip_json_fence,
 )
+from sport_lookup import lookup_sport
+
+
+GRADE_WORDS_RE = re.compile(
+    r"\b(?:GEM[-\s]?MT|MINT|NM[-\s]?MT\+?|NM|EX[-\s]?MT|EX|VG[-\s]?EX|VG|GOOD|FR|PR|HALF[-\s]?POINT)\b",
+    re.IGNORECASE,
+)
+NUMERIC_GRADE_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
 MULTI_CARD_PROMPT = (
@@ -331,6 +339,7 @@ def _normalize_card(card: dict, fallback_index: int) -> dict:
     result["card_index"] = fallback_index
     result["is_graded_slab"] = bool(card.get("is_graded_slab", True))
     result["cert_number"] = "".join(ch for ch in result["cert_number"] if ch.isdigit())
+    result["grade"] = normalize_grade(result["grade"])
     result["confidence"] = (result["confidence"] or "low").lower()
     if result["confidence"] not in {"high", "medium", "low"}:
         result["confidence"] = "low"
@@ -351,7 +360,7 @@ def _normalize_card(card: dict, fallback_index: int) -> dict:
         else:
             company = "unknown"
     result["grading_company"] = company
-    result["category"] = result["category"].lower()
+    result["category"] = normalize_sport(result.get("category", ""), result.get("player", ""), result.get("label_text", ""))
     return _normalize_display_text(result)
 
 
@@ -362,12 +371,13 @@ def _identify_crop_sync(gclient: genai.Client, crop_b64: str) -> dict:
     cert = "".join(ch for ch in str(result.get("cert_number", "") or "").strip() if ch.isdigit())
     result["cert_number"] = cert
     result["confidence"] = str(result.get("confidence", "low") or "low").strip().lower()
+    result["grade"] = normalize_grade(str(result.get("grade", "") or ""))
     result["card_number"] = str(result.get("card_number", "") or "").strip()
     result["parallel"] = str(result.get("parallel", "") or "").strip()
     result["subset"] = str(result.get("subset", "") or "").strip()
     result["attributes"] = str(result.get("attributes", "") or "").strip()
-    result["category"] = str(result.get("category", "") or "").strip().lower()
     result["label_text"] = str(result.get("label_text", "") or "").strip()
+    result["category"] = normalize_sport(str(result.get("category", "") or ""), str(result.get("player", "") or ""), result["label_text"])
 
     company = str(result.get("grading_company", "unknown") or "unknown").strip().upper()
     label_upper = result["label_text"].upper()
@@ -388,6 +398,19 @@ def _identify_crop_sync(gclient: genai.Client, crop_b64: str) -> dict:
     if result.get("is_graded_slab") is False and any(result.get(key) for key in ("grading_company", "player", "grade", "label_text")):
         result["is_graded_slab"] = True
     return _normalize_display_text(result)
+
+
+def normalize_grade(value: str) -> str:
+    text = GRADE_WORDS_RE.sub(" ", str(value or ""))
+    numbers = NUMERIC_GRADE_RE.findall(text)
+    return numbers[-1] if numbers else ""
+
+
+def normalize_sport(value: str, player: str = "", label_text: str = "") -> str:
+    sport = str(value or "").strip()
+    if sport and sport.lower() not in {"unknown", "other", "unclear"}:
+        return sport
+    return lookup_sport(player, label_text)
 
 
 def _normalize_display_text(result: dict) -> dict:

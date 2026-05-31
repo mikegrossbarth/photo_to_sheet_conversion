@@ -9,6 +9,11 @@ from typing import Iterable
 
 
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+GRADE_WORDS_RE = re.compile(
+    r"\b(?:GEM[-\s]?MT|MINT|NM[-\s]?MT\+?|NM|EX[-\s]?MT|EX|VG[-\s]?EX|VG|GOOD|FR|PR|HALF[-\s]?POINT)\b",
+    re.IGNORECASE,
+)
+NUMERIC_GRADE_RE = re.compile(r"\d+(?:\.\d+)?")
 EXCLUDED_DESCRIPTION_ATTRIBUTE_PATTERNS = [
     re.compile(r"^(CENTERING|CORNERS|EDGES|SURFACE)\s*[:\-]?\s*\d+(?:\.\d+)?$", re.IGNORECASE),
     re.compile(r"^(OVERALL|SUBGRADE|SUBGRADES)\b", re.IGNORECASE),
@@ -65,7 +70,7 @@ EXPORT_HEADERS = [
     "Parallel",
     "Grading Company",
     "Grade",
-    "Category",
+    "Sport",
     "Confidence",
     "Is Graded Slab",
     "Raw Label Text",
@@ -105,11 +110,22 @@ def _description_attributes(value) -> str:
     return " ".join(kept)
 
 
+def clean_grade(value) -> str:
+    text = GRADE_WORDS_RE.sub(" ", str(value or ""))
+    numbers = NUMERIC_GRADE_RE.findall(text)
+    return numbers[-1] if numbers else ""
+
+
 def build_card_description(row: dict) -> str:
     parts = []
     seen = set()
     for key in ("year", "set", "player", "parallel", "subset", "attributes", "grading_company", "grade"):
-        value = _description_attributes(row.get(key, "")) if key == "attributes" else _clean_part(row.get(key, ""))
+        if key == "attributes":
+            value = _description_attributes(row.get(key, ""))
+        elif key == "grade":
+            value = clean_grade(row.get(key, ""))
+        else:
+            value = _clean_part(row.get(key, ""))
         if not value:
             continue
         marker = value.upper()
@@ -124,6 +140,7 @@ def build_export_rows(rows: Iterable[dict]) -> list[dict]:
     export_rows = []
     for row in rows:
         export_row = {key: row.get(key, "") for key in EXPORT_KEYS}
+        export_row["grade"] = clean_grade(export_row.get("grade", ""))
         export_row["card_description"] = build_card_description(row)
         export_rows.append(export_row)
     return export_rows

@@ -26,7 +26,7 @@ from live_comps_ocr.cert_extraction import (
     ModelResponseParseError,
     TemporaryModelUnavailable,
 )
-from multi_card_extraction import identify_cards_sync
+from multi_card_extraction import identify_cards_sync, normalize_grade
 from xlsx_export import EXPORT_HEADERS, EXPORT_KEYS, build_export_rows, write_xlsx
 
 
@@ -49,6 +49,7 @@ DISPLAY_COLUMNS = (
     "year",
     "set",
     "grade",
+    "category",
     "confidence",
 )
 READ_ONLY_COLUMNS = {"status", "quality", "file", "card_index"}
@@ -66,6 +67,7 @@ COLUMN_HEADINGS = {
     "set": "Set",
     "attributes": "Attributes",
     "grade": "Grade",
+    "category": "Sport",
     "confidence": "Confidence",
 }
 
@@ -82,6 +84,7 @@ COLUMN_WIDTHS = {
     "set": (150, 300),
     "attributes": (150, 320),
     "grade": (64, 84),
+    "category": (90, 120),
     "confidence": (90, 120),
 }
 
@@ -489,6 +492,8 @@ class OcrSpreadsheetApp(tk.Tk):
         value = str(value or "").strip()
         if column == "cert_number":
             return "".join(ch for ch in value if ch.isdigit())
+        if column == "grade":
+            return normalize_grade(value)
         return value.upper()
 
     def _row_tag(self, index: int) -> str:
