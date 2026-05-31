@@ -9,6 +9,20 @@ from typing import Iterable
 
 
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+EXCLUDED_DESCRIPTION_ATTRIBUTE_PATTERNS = [
+    re.compile(r"^(CENTERING|CORNERS|EDGES|SURFACE)\s*[:\-]?\s*\d+(?:\.\d+)?$", re.IGNORECASE),
+    re.compile(r"^(OVERALL|SUBGRADE|SUBGRADES)\b", re.IGNORECASE),
+]
+EXCLUDED_DESCRIPTION_ATTRIBUTES = {
+    "MINT",
+    "GEM MINT",
+    "PRISTINE",
+    "NEAR MINT",
+    "NM",
+    "NM-MT",
+    "EXCELLENT",
+    "VERY GOOD",
+}
 
 EXPORT_KEYS = [
     "cert_number",
@@ -62,11 +76,30 @@ def _clean_part(value) -> str:
     return re.sub(r"\s+", " ", _clean(value)).strip()
 
 
+def _description_attributes(value) -> str:
+    kept = []
+    seen = set()
+    for part in re.split(r"[;\n\r]+", _clean(value)):
+        item = _clean_part(part)
+        if not item:
+            continue
+        marker = item.upper()
+        if marker in EXCLUDED_DESCRIPTION_ATTRIBUTES:
+            continue
+        if any(pattern.match(item) for pattern in EXCLUDED_DESCRIPTION_ATTRIBUTE_PATTERNS):
+            continue
+        if marker in seen:
+            continue
+        seen.add(marker)
+        kept.append(item)
+    return " ".join(kept)
+
+
 def build_card_description(row: dict) -> str:
     parts = []
     seen = set()
     for key in ("year", "set", "player", "parallel", "subset", "attributes", "grading_company", "grade"):
-        value = _clean_part(row.get(key, ""))
+        value = _description_attributes(row.get(key, "")) if key == "attributes" else _clean_part(row.get(key, ""))
         if not value:
             continue
         marker = value.upper()
