@@ -31,6 +31,15 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
 
 set PYTHON_EXE=%VENV_DIR%\Scripts\python.exe
 
+"%PYTHON_EXE%" "%~dp0app\check_dependencies.py" >nul 2>nul
+if %errorlevel%==0 (
+  echo Dependencies are already installed.
+  echo.
+  echo Setup complete.
+  pause
+  exit /b 0
+)
+
 echo Upgrading pip...
 "%PYTHON_EXE%" -m pip install --upgrade pip
 if errorlevel 1 (
@@ -45,6 +54,14 @@ echo Installing app dependencies...
 if errorlevel 1 (
   echo.
   echo Dependency install failed.
+  pause
+  exit /b 1
+)
+
+"%PYTHON_EXE%" "%~dp0app\write_dependency_stamp.py"
+if errorlevel 1 (
+  echo.
+  echo Could not write dependency stamp.
   pause
   exit /b 1
 )

@@ -1,6 +1,7 @@
 .env
 app/.env
 .venv/
+.requirements.sha256
 outputs/
 vendor/
 __pycache__/
