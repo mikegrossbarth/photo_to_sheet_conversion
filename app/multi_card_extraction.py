@@ -528,7 +528,7 @@ def normalize_grade(value: str) -> str:
 
 def normalize_sport(value: str, player: str = "", label_text: str = "") -> str:
     sport = str(value or "").strip()
-    if sport and sport.lower() not in {"unknown", "other", "unclear"}:
+    if sport and sport.lower() not in {"unknown", "other", "unclear", "sports"}:
         return sport
     return lookup_sport(player, label_text)
 
@@ -602,11 +602,34 @@ def _detect_regions_sync(gclient: genai.Client, image_bytes: bytes, mime_type: s
     except Exception as error:
         logging.info(f"[label detection skipped] {str(error)[:160]}")
     regions = _dedupe_regions(regions)
+    regions = _expand_partial_row_regions(regions)
     regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
     for index, region in enumerate(regions):
         region["card_index"] = index + 1
     logging.info(f"[regions detected] {len(regions)}")
     return regions
+
+
+def _expand_partial_row_regions(regions: list[dict]) -> list[dict]:
+    row_groups = {
+        "top": [region for region in regions if "top" in str(region.get("position", "")).lower()],
+        "bottom": [region for region in regions if "bottom" in str(region.get("position", "")).lower()],
+    }
+    updated = []
+    for region in regions:
+        bbox = region["bbox"]
+        x1, y1, x2, y2 = bbox
+        height = y2 - y1
+        pos = str(region.get("position", "")).lower()
+        row_key = "top" if "top" in pos else "bottom" if "bottom" in pos else ""
+        row = row_groups.get(row_key, [])
+        tall_row_boxes = [item["bbox"] for item in row if item["bbox"][3] - item["bbox"][1] >= max(height * 1.35, 330)]
+        if row_key and height < 320 and tall_row_boxes:
+            row_y1 = min(item[1] for item in tall_row_boxes)
+            row_y2 = max(item[3] for item in tall_row_boxes)
+            bbox = [x1, row_y1, x2, row_y2]
+        updated.append({**region, "bbox": bbox})
+    return updated
 
 
 def identify_cards_sync(gclient: genai.Client, image_b64: str) -> list[dict]:
