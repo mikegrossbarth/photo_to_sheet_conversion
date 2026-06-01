@@ -65,6 +65,18 @@ DETECTION_PROMPT = (
     "confidence must be high, medium, or low."
 )
 
+LABEL_DETECTION_PROMPT = (
+    "Locate every visible grading label/header area on graded card slabs in this photo. "
+    "This is a detection task only. Find PSA, BGS/Beckett, SGC, CGC, TAG, and unknown slab labels equally. "
+    "Cards may be in a random layout, tilted, partially visible, overlapping, or not aligned to a grid. "
+    "Return one object per visible slab label, not one object per row or group. Never merge adjacent labels. "
+    "For each label, return a bounding box around the label/header region, not the whole slab. "
+    "Use normalized integer coordinates from 0 to 1000 with [x_min, y_min, x_max, y_max]. "
+    "Return JSON only with this exact shape: "
+    '{"cards":[{"card_index": int, "position": str, "bbox": [int, int, int, int], "confidence": str}]}. '
+    "confidence must be high, medium, or low."
+)
+
 CROP_CARD_PROMPT = (
     "You are reading one cropped graded trading card slab/card holder that came from a larger group photo. "
     "The crop may be blurry, tilted, partial, or low resolution. Your job is to extract any visible inventory fields without guessing. "
@@ -286,6 +298,45 @@ def _split_wide_regions(regions: list[dict]) -> list[dict]:
     return split_regions
 
 
+def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
+    expanded = []
+    for region in label_regions:
+        x1, y1, x2, y2 = region["bbox"]
+        width = x2 - x1
+        height = y2 - y1
+        if width < 40 or height < 12:
+            continue
+        vertical = height > width * 0.75
+        if vertical:
+            slab_width = max(int(width * 4.2), 170)
+            slab_height = max(int(height * 1.6), 250)
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            bbox = [
+                max(0, cx - slab_width // 2),
+                max(0, cy - slab_height // 2),
+                min(1000, cx + slab_width // 2),
+                min(1000, cy + slab_height // 2),
+            ]
+        else:
+            pad_x = max(int(width * 0.15), 20)
+            slab_down = max(int(width * 1.35), 210)
+            slab_up = max(int(height * 1.1), 35)
+            bbox = [
+                max(0, x1 - pad_x),
+                max(0, y1 - slab_up),
+                min(1000, x2 + pad_x),
+                min(1000, y2 + slab_down),
+            ]
+        expanded.append({
+            **region,
+            "bbox": bbox,
+            "position": region.get("position", "") or "label anchor",
+            "detection_confidence": region.get("detection_confidence", "medium"),
+        })
+    return expanded
+
+
 def _center(region: dict) -> tuple[float, float]:
     x1, y1, x2, y2 = region["bbox"]
     return ((x1 + x2) / 2, (y1 + y2) / 2)
@@ -373,6 +424,19 @@ def _dedupe_regions(regions: list[dict]) -> list[dict]:
             continue
         kept.append(region)
     return kept
+
+
+def _merge_regions(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    merged = list(primary)
+    for region in secondary:
+        x1, y1, x2, y2 = region["bbox"]
+        area = (x2 - x1) * (y2 - y1)
+        if area > 190000:
+            continue
+        if any(_bbox_iou(region["bbox"], existing["bbox"]) > 0.12 for existing in merged):
+            continue
+        merged.append(region)
+    return merged
 
 
 def _normalize_card(card: dict, fallback_index: int) -> dict:
@@ -525,9 +589,22 @@ def _crop_region_to_base64(image, bbox: list[int], padding_ratio: float = 0.045)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _detect_regions_for_prompt(gclient: genai.Client, image_bytes: bytes, mime_type: str, prompt: str) -> list[dict]:
+    response = _generate_with_retry(gclient, image_bytes, mime_type, prompt)
+    return _parse_regions(response.text.strip())
+
+
 def _detect_regions_sync(gclient: genai.Client, image_bytes: bytes, mime_type: str) -> list[dict]:
-    response = _generate_with_retry(gclient, image_bytes, mime_type, DETECTION_PROMPT)
-    regions = _parse_regions(response.text.strip())
+    regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, DETECTION_PROMPT)
+    try:
+        label_regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_DETECTION_PROMPT)
+        regions = _merge_regions(regions, _expand_label_regions(label_regions))
+    except Exception as error:
+        logging.info(f"[label detection skipped] {str(error)[:160]}")
+    regions = _dedupe_regions(regions)
+    regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
+    for index, region in enumerate(regions):
+        region["card_index"] = index + 1
     logging.info(f"[regions detected] {len(regions)}")
     return regions
 
