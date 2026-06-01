@@ -198,13 +198,15 @@ def _parse_regions(raw: str) -> list[dict]:
         x1, y1, x2, y2 = [max(0, min(1000, value)) for value in (x1, y1, x2, y2)]
         if x2 - x1 < 25 or y2 - y1 < 25:
             continue
+        position = str(card.get("position", "") or "").strip()
         regions.append({
             "card_index": index + 1,
-            "position": str(card.get("position", "") or "").strip(),
+            "position": position,
             "bbox": [x1, y1, x2, y2],
             "detection_confidence": str(card.get("confidence", "") or "").strip().lower() or "low",
         })
 
+    regions = _orient_region_set(regions)
     regions = _split_wide_regions(regions)
     regions = _dedupe_regions(regions)
     regions = _fill_simple_grid_gaps(regions)
@@ -212,6 +214,60 @@ def _parse_regions(raw: str) -> list[dict]:
     for index, region in enumerate(regions):
         region["card_index"] = index + 1
     return regions[:24]
+
+
+def _third(value: float) -> str:
+    if value < 360:
+        return "low"
+    if value > 640:
+        return "high"
+    return "mid"
+
+
+def _position_score(bbox: list[int], position: str) -> int:
+    x1, y1, x2, y2 = bbox
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    pos = position.lower()
+    score = 0
+    x_third = _third(cx)
+    y_third = _third(cy)
+    if "left" in pos and x_third == "low":
+        score += 1
+    if "right" in pos and x_third == "high":
+        score += 1
+    if "center" in pos and x_third == "mid":
+        score += 1
+    if "top" in pos and y_third == "low":
+        score += 1
+    if "bottom" in pos and y_third == "high":
+        score += 1
+    if "middle" in pos and y_third == "mid":
+        score += 1
+    return score
+
+
+def _orient_bbox(bbox: list[int], position: str) -> list[int]:
+    swapped = [bbox[1], bbox[0], bbox[3], bbox[2]]
+    if swapped[2] - swapped[0] < 25 or swapped[3] - swapped[1] < 25:
+        return bbox
+    if _position_score(swapped, position) > _position_score(bbox, position):
+        return swapped
+    return bbox
+
+
+def _orient_region_set(regions: list[dict]) -> list[dict]:
+    original_score = sum(_position_score(region["bbox"], region.get("position", "")) for region in regions)
+    swapped_score = sum(
+        _position_score([region["bbox"][1], region["bbox"][0], region["bbox"][3], region["bbox"][2]], region.get("position", ""))
+        for region in regions
+    )
+    if swapped_score > original_score:
+        return [
+            {**region, "bbox": [region["bbox"][1], region["bbox"][0], region["bbox"][3], region["bbox"][2]]}
+            for region in regions
+        ]
+    return [{**region, "bbox": _orient_bbox(region["bbox"], region.get("position", ""))} for region in regions]
 
 
 def _split_wide_regions(regions: list[dict]) -> list[dict]:
