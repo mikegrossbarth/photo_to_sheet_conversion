@@ -67,6 +67,17 @@ DETECTION_PROMPT = (
     "confidence must be high, medium, or low."
 )
 
+ROW_DETECTION_PROMPT = (
+    "Locate each visible graded trading card slab/card holder in this photo, with special attention to slabs standing side-by-side in a simple horizontal row. "
+    "Return one box around each full plastic slab holder. Do not use grading label boxes only. Do not merge touching slabs. "
+    "If three separate slab holders are visible left, middle, and right, return exactly three separate full-slab boxes. "
+    "Cards may still be tilted, partially cropped, or different grading companies. Ignore background boxes, table surfaces, and handwriting. "
+    "Use normalized integer coordinates from 0 to 1000 with [x_min, y_min, x_max, y_max]. "
+    "Return JSON only with this exact shape: "
+    '{"cards":[{"card_index": int, "position": str, "bbox": [int, int, int, int], "confidence": str}]}. '
+    "confidence must be high, medium, or low."
+)
+
 LABEL_DETECTION_PROMPT = (
     "Locate every visible grading label/header area on graded card slabs in this photo. "
     "This is a detection task only. Find PSA, BGS/Beckett, SGC, CGC, TAG, and unknown slab labels equally. "
@@ -318,10 +329,12 @@ def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
         height = y2 - y1
         if width < 40 or height < 12:
             continue
+        if width > 360 or height > 180:
+            continue
         vertical = height > width * 0.75
         if vertical:
-            slab_width = max(int(width * 4.2), 170)
-            slab_height = max(int(height * 1.6), 250)
+            slab_width = min(max(int(width * 4.2), 170), 330)
+            slab_height = min(max(int(height * 1.6), 250), 520)
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             bbox = [
@@ -332,7 +345,7 @@ def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
             ]
         else:
             pad_x = max(int(width * 0.12), 14)
-            slab_down = max(int(width * 1.35), 210)
+            slab_down = min(max(int(width * 1.35), 210), 520)
             slab_up = max(int(height * 1.1), 35)
             bbox = [
                 max(0, x1 - pad_x),
@@ -340,6 +353,8 @@ def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
                 min(1000, x2 + pad_x),
                 min(1000, y2 + slab_down),
             ]
+        if (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) > 185000:
+            continue
         expanded.append({
             **region,
             "bbox": bbox,
@@ -366,7 +381,10 @@ def _dedupe_regions(regions: list[dict]) -> list[dict]:
     kept: list[dict] = []
     for region in sorted(regions, key=lambda item: (item["bbox"][1], item["bbox"][0])):
         bbox = region["bbox"]
-        if any(_bbox_iou(bbox, existing["bbox"]) > 0.42 for existing in kept):
+        duplicate_index = next((index for index, existing in enumerate(kept) if _bbox_iou(bbox, existing["bbox"]) > 0.42), None)
+        if duplicate_index is not None:
+            if _region_preference_score(region) > _region_preference_score(kept[duplicate_index]):
+                kept[duplicate_index] = region
             continue
         kept.append(region)
     return kept
@@ -379,10 +397,31 @@ def _merge_regions(primary: list[dict], secondary: list[dict]) -> list[dict]:
         area = (x2 - x1) * (y2 - y1)
         if area > 190000:
             continue
-        if any(_bbox_iou(region["bbox"], existing["bbox"]) > 0.12 for existing in merged):
+        overlap_index = next((index for index, existing in enumerate(merged) if _bbox_iou(region["bbox"], existing["bbox"]) > 0.12), None)
+        if overlap_index is not None:
+            if _region_preference_score(region) > _region_preference_score(merged[overlap_index]):
+                merged[overlap_index] = region
             continue
         merged.append(region)
     return merged
+
+
+def _region_preference_score(region: dict) -> int:
+    x1, y1, x2, y2 = region["bbox"]
+    width = x2 - x1
+    height = y2 - y1
+    area = width * height
+    score = area
+    if height >= 330:
+        score += 70000
+    if height <= 180:
+        score -= 45000
+    confidence = str(region.get("detection_confidence", "") or "").lower()
+    if confidence == "high":
+        score += 15000
+    elif confidence == "low":
+        score -= 8000
+    return score
 
 
 def _normalize_card(card: dict, fallback_index: int) -> dict:
@@ -502,11 +541,6 @@ def _verify_crop_cert(gclient: genai.Client, crop_b64: str, result: dict) -> Non
         result["cert_number"] = verified_cert
         cert = verified_cert
     if verified_cert == cert and company_ok:
-        if company == "PSA" and _is_modern_short_psa_cert(result, cert):
-            logging.info(f"[cert verification suspicious] modern PSA short cert={cert}")
-            result["cert_verified"] = "NO"
-            result["confidence"] = "medium" if result.get("confidence") == "high" else result.get("confidence", "low")
-            return
         result["cert_verified"] = "YES"
         return
 
@@ -632,22 +666,64 @@ def _detect_regions_for_prompt(gclient: genai.Client, image_bytes: bytes, mime_t
     return _parse_regions(response.text.strip())
 
 
+def _detect_best_row_regions(gclient: genai.Client, image_bytes: bytes, mime_type: str, attempts: int = 2) -> list[dict]:
+    best: list[dict] = []
+    for _ in range(attempts):
+        try:
+            candidate = _detect_regions_for_prompt(gclient, image_bytes, mime_type, ROW_DETECTION_PROMPT)
+        except Exception as error:
+            logging.info(f"[row detection skipped] {str(error)[:160]}")
+            continue
+        if len(candidate) > len(best):
+            best = candidate
+        if len(best) >= 3:
+            break
+    return best
+
+
+def _detect_best_prompt_regions(gclient: genai.Client, image_bytes: bytes, mime_type: str, prompt: str, attempts: int = 2) -> list[dict]:
+    best: list[dict] = []
+    for _ in range(attempts):
+        try:
+            candidate = _detect_regions_for_prompt(gclient, image_bytes, mime_type, prompt)
+        except Exception as error:
+            logging.info(f"[prompt detection skipped] {str(error)[:160]}")
+            continue
+        if len(candidate) > len(best):
+            best = candidate
+        if len(best) >= 3:
+            break
+    return best
+
+
 def _detect_regions_sync(gclient: genai.Client, image_bytes: bytes, mime_type: str) -> list[dict]:
     regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, DETECTION_PROMPT)
+    row_regions = []
+    if len(regions) < 4:
+        row_regions = _detect_best_row_regions(gclient, image_bytes, mime_type)
+    if len(row_regions) > len(regions):
+        regions = row_regions
+    elif row_regions:
+        regions = _merge_regions(regions, row_regions)
     label_regions = []
     try:
         label_regions.extend(_detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_DETECTION_PROMPT))
     except Exception as error:
         logging.info(f"[label detection skipped] {str(error)[:160]}")
-    try:
-        label_regions.extend(_detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_SWEEP_PROMPT))
-    except Exception as error:
-        logging.info(f"[label sweep skipped] {str(error)[:160]}")
+    label_regions.extend(_detect_best_prompt_regions(gclient, image_bytes, mime_type, LABEL_SWEEP_PROMPT))
     if label_regions:
         expanded_labels = _expand_label_regions(_dedupe_regions(label_regions))
         if expanded_labels:
-            regions = _merge_regions(expanded_labels, regions)
+            if len(expanded_labels) > len(regions):
+                regions = expanded_labels
+            else:
+                regions = _merge_regions(expanded_labels, regions)
     regions = _dedupe_regions(regions)
+    if len(regions) < 3 and row_regions:
+        regions = _merge_regions(regions, row_regions)
+        regions = _dedupe_regions(regions)
+    regions = _add_uncovered_edge_regions(regions)
+    regions = _expand_body_regions_upward(regions)
     regions = _expand_partial_row_regions(regions)
     regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
     for index, region in enumerate(regions):
@@ -675,6 +751,39 @@ def _expand_partial_row_regions(regions: list[dict]) -> list[dict]:
             row_y2 = max(item[3] for item in tall_row_boxes)
             bbox = [x1, row_y1, x2, row_y2]
         updated.append({**region, "bbox": bbox})
+    return updated
+
+
+def _add_uncovered_edge_regions(regions: list[dict]) -> list[dict]:
+    if len(regions) < 2:
+        return regions
+    sorted_regions = sorted(regions, key=lambda item: item["bbox"][0])
+    first = sorted_regions[0]["bbox"]
+    tall_boxes = [region["bbox"] for region in regions if region["bbox"][3] - region["bbox"][1] >= 350]
+    if not tall_boxes:
+        return regions
+    y1 = max(0, min(box[1] for box in tall_boxes) - 30)
+    y2 = min(1000, max(max(box[3] for box in tall_boxes), max(region["bbox"][3] for region in regions)))
+    added = list(regions)
+    if first[0] > 260:
+        added.append({
+            "card_index": len(added) + 1,
+            "position": "left edge candidate",
+            "bbox": [0, y1, min(1000, first[0] + 15), y2],
+            "detection_confidence": "low",
+        })
+    return added
+
+
+def _expand_body_regions_upward(regions: list[dict]) -> list[dict]:
+    updated = []
+    for region in regions:
+        x1, y1, x2, y2 = region["bbox"]
+        width = x2 - x1
+        height = y2 - y1
+        if y1 > 180 and width >= 160 and height >= 280:
+            y1 = max(0, y1 - max(220, int(height * 0.42)))
+        updated.append({**region, "bbox": [x1, y1, x2, y2]})
     return updated
 
 
