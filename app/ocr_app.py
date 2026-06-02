@@ -521,17 +521,15 @@ class OcrSpreadsheetApp(tk.Tk):
         if company and company != "unknown":
             score += 15
         if data.get("player"):
-            score += 14
+            score += 15
         if data.get("year"):
-            score += 8
+            score += 10
         if data.get("set"):
-            score += 7
-        if data.get("attributes"):
-            score += 6
+            score += 10
         if data.get("grade"):
-            score += 7
+            score += 10
         confidence = str(data.get("confidence", "") or "").lower()
-        score += {"high": 4, "medium": 2, "low": 0}.get(confidence, 0)
+        score += {"high": 5, "medium": 3, "low": 0}.get(confidence, 0)
         return min(score, 100)
 
     def _sort_rows(self) -> None:

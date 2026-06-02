@@ -84,6 +84,8 @@ LABEL_DETECTION_PROMPT = (
 CROP_CARD_PROMPT = (
     "You are reading one cropped graded trading card slab/card holder that came from a larger group photo. "
     "The crop may be blurry, tilted, partial, or low resolution. Your job is to extract any visible inventory fields without guessing. "
+    "Use the main/central slab in the crop. If parts of neighboring slab labels appear at the crop edges, ignore those neighboring labels completely. "
+    "Ignore handwritten prices, sticky notes, price stickers, and marker writing on sleeves; they are not inventory fields. "
     "If the slab/card holder is visible but label text is unreadable, keep is_graded_slab true, set confidence low, and leave unreadable fields blank. "
     "Do not reject a crop just because the cert number cannot be read. "
     "Read the grading company, certification number, player or subject, year, set, card number, parallel, subset, grade, broad category, and raw label/card text. "
@@ -223,7 +225,6 @@ def _parse_regions(raw: str) -> list[dict]:
         })
 
     regions = _orient_region_set(regions)
-    regions = _split_wide_regions(regions)
     regions = _dedupe_regions(regions)
     regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
     for index, region in enumerate(regions):
@@ -285,22 +286,6 @@ def _orient_region_set(regions: list[dict]) -> list[dict]:
     return [{**region, "bbox": _orient_bbox(region["bbox"], region.get("position", ""))} for region in regions]
 
 
-def _split_wide_regions(regions: list[dict]) -> list[dict]:
-    split_regions: list[dict] = []
-    for region in regions:
-        x1, y1, x2, y2 = region["bbox"]
-        width = x2 - x1
-        height = y2 - y1
-        if width > height * 2.15 and width > 360 and height < 300:
-            mid = (x1 + x2) // 2
-            left = {**region, "bbox": [x1, y1, mid, y2], "position": "left section"}
-            right = {**region, "bbox": [mid, y1, x2, y2], "position": "right section"}
-            split_regions.extend([left, right])
-        else:
-            split_regions.append(region)
-    return split_regions
-
-
 def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
     expanded = []
     for region in label_regions:
@@ -322,7 +307,7 @@ def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
                 min(1000, cy + slab_height // 2),
             ]
         else:
-            pad_x = max(int(width * 0.15), 20)
+            pad_x = max(int(width * 0.08), 10)
             slab_down = max(int(width * 1.35), 210)
             slab_up = max(int(height * 1.1), 35)
             bbox = [
@@ -432,7 +417,7 @@ def _identify_crop_sync(gclient: genai.Client, crop_b64: str) -> dict:
     result["card_number"] = str(result.get("card_number", "") or "").strip()
     result["parallel"] = str(result.get("parallel", "") or "").strip()
     result["subset"] = str(result.get("subset", "") or "").strip()
-    result["attributes"] = str(result.get("attributes", "") or "").strip()
+    result["attributes"] = _normalize_attributes(str(result.get("attributes", "") or ""))
     result["label_text"] = str(result.get("label_text", "") or "").strip()
     result["category"] = normalize_sport(str(result.get("category", "") or ""), str(result.get("player", "") or ""), result["label_text"])
 
@@ -463,6 +448,12 @@ def normalize_grade(value: str) -> str:
     return numbers[-1] if numbers else ""
 
 
+def _normalize_attributes(value: str) -> str:
+    text = GRADE_WORDS_RE.sub(" ", str(value or ""))
+    parts = [re.sub(r"\s+", " ", part).strip(" ;,") for part in re.split(r"[;\n]+", text)]
+    return "; ".join(part for part in parts if part)
+
+
 def normalize_sport(value: str, player: str = "", label_text: str = "") -> str:
     sport = str(value or "").strip()
     if sport and sport.lower() not in {"unknown", "other", "unclear", "sports"}:
@@ -490,6 +481,8 @@ def _normalize_display_text(result: dict) -> dict:
     for key in upper_fields:
         if key in result and result.get(key) is not None:
             result[key] = str(result.get(key) or "").strip().upper()
+    if "attributes" in result:
+        result["attributes"] = _normalize_attributes(result.get("attributes", "")).upper()
     return result
 
 
@@ -501,7 +494,7 @@ def _decode_image(image_b64: str):
     return PIL.Image.open(io.BytesIO(base64.b64decode(image_b64)))
 
 
-def _crop_region_to_base64(image, bbox: list[int], padding_ratio: float = 0.045) -> str:
+def _crop_region_to_base64(image, bbox: list[int], padding_ratio: float = 0.025) -> str:
     x1, y1, x2, y2 = bbox
     width, height = image.size
     left = int(width * x1 / 1000)
@@ -535,7 +528,9 @@ def _detect_regions_sync(gclient: genai.Client, image_bytes: bytes, mime_type: s
     regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, DETECTION_PROMPT)
     try:
         label_regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_DETECTION_PROMPT)
-        regions = _merge_regions(regions, _expand_label_regions(label_regions))
+        expanded_labels = _expand_label_regions(label_regions)
+        if expanded_labels:
+            regions = _merge_regions(expanded_labels, regions)
     except Exception as error:
         logging.info(f"[label detection skipped] {str(error)[:160]}")
     regions = _dedupe_regions(regions)
@@ -567,6 +562,61 @@ def _expand_partial_row_regions(regions: list[dict]) -> list[dict]:
             bbox = [x1, row_y1, x2, row_y2]
         updated.append({**region, "bbox": bbox})
     return updated
+
+
+def _card_read_score(card: dict) -> int:
+    score = 0
+    if card.get("cert_number"):
+        score += 45
+    company = str(card.get("grading_company", "") or "").strip().lower()
+    if company and company != "unknown":
+        score += 15
+    if card.get("player"):
+        score += 15
+    if card.get("year"):
+        score += 10
+    if card.get("set"):
+        score += 10
+    if card.get("grade"):
+        score += 10
+    confidence = str(card.get("confidence", "") or "").lower()
+    score += {"high": 5, "medium": 3, "low": 0}.get(confidence, 0)
+    return min(score, 100)
+
+
+def _norm_key(value) -> str:
+    return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
+
+
+def _is_same_subject_card(a: dict, b: dict) -> bool:
+    player_a = _norm_key(a.get("player"))
+    player_b = _norm_key(b.get("player"))
+    if not player_a or player_a != player_b:
+        return False
+    set_a = _norm_key(a.get("set"))
+    set_b = _norm_key(b.get("set"))
+    year_a = _norm_key(a.get("year"))
+    year_b = _norm_key(b.get("year"))
+    category_a = _norm_key(a.get("category"))
+    category_b = _norm_key(b.get("category"))
+    return bool((set_a and set_a == set_b) or (year_a and year_a == year_b) or (category_a and category_a == category_b))
+
+
+def _dedupe_card_results(cards: list[dict]) -> list[dict]:
+    useful = [
+        card for card in cards
+        if any(card.get(key) for key in ("cert_number", "player", "year", "set", "card_number", "parallel", "subset", "grade", "label_text"))
+    ]
+    ordered = sorted(enumerate(useful), key=lambda item: (-_card_read_score(item[1]), item[0]))
+    kept: list[tuple[int, dict]] = []
+    for original_index, card in ordered:
+        cert = str(card.get("cert_number", "") or "")
+        if cert and any(cert == str(existing.get("cert_number", "") or "") for _, existing in kept):
+            continue
+        if not cert and any(existing.get("cert_number") and _is_same_subject_card(card, existing) for _, existing in kept):
+            continue
+        kept.append((original_index, card))
+    return [card for _, card in sorted(kept, key=lambda item: item[0])]
 
 
 def identify_cards_sync(gclient: genai.Client, image_b64: str) -> list[dict]:
@@ -610,7 +660,7 @@ def identify_cards_sync(gclient: genai.Client, image_b64: str) -> list[dict]:
                     "error": str(error),
                 })
         logging.info(f"[multi identified via crops] {len(cards)} card(s)")
-        return cards
+        return _dedupe_card_results(cards)
 
     logging.info("[multi identified] region detection returned 0 cards; retrying whole-photo fallback prompt")
     try:
@@ -619,6 +669,6 @@ def identify_cards_sync(gclient: genai.Client, image_b64: str) -> list[dict]:
         logging.info(f"[multi fallback gemini] {time.time() - t2:.2f}s")
         cards = _parse_cards(response.text.strip())
         logging.info(f"[multi identified fallback] {len(cards)} card(s)")
-        return cards
+        return _dedupe_card_results(cards)
     except ModelResponseParseError:
         raise
