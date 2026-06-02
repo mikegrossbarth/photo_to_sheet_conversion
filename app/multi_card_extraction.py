@@ -20,6 +20,7 @@ from live_comps_ocr.cert_extraction import (
     _is_temporary_model_error,
     _parse_model_json,
     _strip_json_fence,
+    identify_cert_sync,
 )
 from sport_lookup import lookup_sport
 
@@ -437,9 +438,37 @@ def _identify_crop_sync(gclient: genai.Client, crop_b64: str) -> dict:
         else:
             company = "unknown"
     result["grading_company"] = company
+    _verify_crop_cert(gclient, crop_b64, result)
     if result.get("is_graded_slab") is False and any(result.get(key) for key in ("grading_company", "player", "grade", "label_text")):
         result["is_graded_slab"] = True
     return _normalize_display_text(result)
+
+
+def _verify_crop_cert(gclient: genai.Client, crop_b64: str, result: dict) -> None:
+    cert = str(result.get("cert_number", "") or "")
+    if not cert:
+        result["cert_verified"] = ""
+        return
+    try:
+        verification = identify_cert_sync(gclient, crop_b64)
+    except Exception as error:
+        logging.info(f"[cert verification skipped] cert={cert} error={str(error)[:140]}")
+        result["cert_verified"] = "UNVERIFIED"
+        result["confidence"] = "medium" if result.get("confidence") == "high" else result.get("confidence", "low")
+        return
+
+    verified_cert = "".join(ch for ch in str(verification.get("cert_number", "") or "") if ch.isdigit())
+    verified_company = str(verification.get("grading_company", "") or "").strip().upper()
+    company = str(result.get("grading_company", "") or "").strip().upper()
+    company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
+    if verified_cert == cert and company_ok:
+        result["cert_verified"] = "YES"
+        return
+
+    logging.info(f"[cert verification mismatch] crop={cert or '?'} verify={verified_cert or '?'} company={company}/{verified_company}")
+    result["cert_number"] = ""
+    result["cert_verified"] = "NO"
+    result["confidence"] = "medium" if result.get("confidence") == "high" else result.get("confidence", "low")
 
 
 def normalize_grade(value: str) -> str:
@@ -566,7 +595,8 @@ def _expand_partial_row_regions(regions: list[dict]) -> list[dict]:
 
 def _card_read_score(card: dict) -> int:
     score = 0
-    if card.get("cert_number"):
+    cert_status = str(card.get("cert_verified", "") or "").upper()
+    if card.get("cert_number") and (not cert_status or cert_status == "YES"):
         score += 45
     company = str(card.get("grading_company", "") or "").strip().lower()
     if company and company != "unknown":

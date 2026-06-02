@@ -515,7 +515,8 @@ class OcrSpreadsheetApp(tk.Tk):
 
     def _quality_score(self, data: dict) -> int:
         score = 0
-        if data.get("cert_number"):
+        cert_status = str(data.get("cert_verified", "") or "").upper()
+        if data.get("cert_number") and (not cert_status or cert_status == "YES"):
             score += 45
         company = str(data.get("grading_company", "") or "").strip().lower()
         if company and company != "unknown":
