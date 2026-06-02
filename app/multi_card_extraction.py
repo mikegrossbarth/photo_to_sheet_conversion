@@ -471,12 +471,19 @@ def _verify_crop_cert(gclient: genai.Client, crop_b64: str, result: dict) -> Non
     verified_company = str(verification.get("grading_company", "") or "").strip().upper()
     company = str(result.get("grading_company", "") or "").strip().upper()
     company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
-    if company == "PSA" and _is_modern_short_psa_cert(result, verified_cert or cert):
+    rotated_cert = ""
+    rotated_company = ""
+    if company == "PSA" and (_is_modern_short_psa_cert(result, verified_cert or cert) or verified_cert != cert):
         rotated = _verify_rotated_cert_only_sync(gclient, crop_b64)
         rotated_cert = "".join(ch for ch in str(rotated.get("cert_number", "") or "") if ch.isdigit())
-        if rotated_cert.startswith(verified_cert or cert) and len(rotated_cert) > len(verified_cert or cert):
+        rotated_company = str(rotated.get("grading_company", "") or "").strip().upper()
+        if rotated_cert == cert:
             verified_cert = rotated_cert
-            verified_company = str(rotated.get("grading_company", "") or "").strip().upper() or verified_company
+            verified_company = rotated_company or verified_company
+            company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
+        elif rotated_cert.startswith(verified_cert or cert) and len(rotated_cert) > len(verified_cert or cert):
+            verified_cert = rotated_cert
+            verified_company = rotated_company or verified_company
             company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
     if verified_cert.startswith(cert) and len(verified_cert) > len(cert):
         result["cert_number"] = verified_cert
