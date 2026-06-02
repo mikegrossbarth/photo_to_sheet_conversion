@@ -41,6 +41,7 @@ EXCLUDED_DESCRIPTION_ATTRIBUTES = {
 
 EXPORT_KEYS = [
     "cert_number",
+    "purchase_price",
     "card_description",
     "card_number",
     "player",
@@ -50,7 +51,6 @@ EXPORT_KEYS = [
     "parallel",
     "grading_company",
     "grade",
-    "purchase_price",
     "category",
     "confidence",
     "is_graded_slab",
@@ -62,6 +62,7 @@ EXPORT_KEYS = [
 
 EXPORT_HEADERS = [
     "Certification Number",
+    "Purchase Price",
     "Card Description",
     "Card Number",
     "Player / Subject",
@@ -71,7 +72,6 @@ EXPORT_HEADERS = [
     "Parallel",
     "Grading Company",
     "Grade",
-    "Purchase Price",
     "Sport",
     "Confidence",
     "Is Graded Slab",

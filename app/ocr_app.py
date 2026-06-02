@@ -45,12 +45,12 @@ DISPLAY_COLUMNS = (
     "position",
     "grading_company",
     "cert_number",
+    "purchase_price",
     "player",
     "attributes",
     "year",
     "set",
     "grade",
-    "purchase_price",
     "category",
     "confidence",
 )
