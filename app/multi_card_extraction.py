@@ -20,7 +20,6 @@ from live_comps_ocr.cert_extraction import (
     _is_temporary_model_error,
     _parse_model_json,
     _strip_json_fence,
-    identify_cert_sync,
 )
 from sport_lookup import lookup_sport
 
@@ -104,6 +103,17 @@ CROP_CARD_PROMPT = (
     '{"mode": "crop", "is_graded_slab": bool, "grading_company": str, "cert_number": str, "player": str, "year": str, '
     '"set": str, "card_number": str, "parallel": str, "subset": str, "attributes": str, "grade": str, "category": str, "confidence": str, "label_text": str}. '
     "confidence must be one of: high, medium, low."
+)
+
+CERT_ONLY_PROMPT = (
+    "You are verifying the certification number on one cropped graded trading card slab. "
+    "Only read the main/central slab label in this crop. Ignore neighboring labels, handwritten prices, sticky notes, price stickers, and marker writing. "
+    "Read the grading company and the complete certification number printed on the slab label. "
+    "For PSA labels, the cert number is usually at the far right or bottom-right of the label; pay special attention to the rightmost digits and do not drop a trailing digit. "
+    "Do not guess. If every digit of the cert is not clearly readable, return an empty cert_number and low confidence. "
+    "Return JSON only with this exact shape: "
+    '{"mode":"cert_verify","grading_company":str,"cert_number":str,"confidence":str,"label_text":str}. '
+    "confidence must be high, medium, or low."
 )
 
 FALLBACK_MULTI_CARD_PROMPT = (
@@ -308,7 +318,7 @@ def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
                 min(1000, cy + slab_height // 2),
             ]
         else:
-            pad_x = max(int(width * 0.08), 10)
+            pad_x = max(int(width * 0.12), 14)
             slab_down = max(int(width * 1.35), 210)
             slab_up = max(int(height * 1.1), 35)
             bbox = [
@@ -450,7 +460,7 @@ def _verify_crop_cert(gclient: genai.Client, crop_b64: str, result: dict) -> Non
         result["cert_verified"] = ""
         return
     try:
-        verification = identify_cert_sync(gclient, crop_b64)
+        verification = _verify_cert_only_sync(gclient, crop_b64)
     except Exception as error:
         logging.info(f"[cert verification skipped] cert={cert} error={str(error)[:140]}")
         result["cert_verified"] = "UNVERIFIED"
@@ -462,13 +472,32 @@ def _verify_crop_cert(gclient: genai.Client, crop_b64: str, result: dict) -> Non
     company = str(result.get("grading_company", "") or "").strip().upper()
     company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
     if verified_cert == cert and company_ok:
+        if company == "PSA" and _is_modern_short_psa_cert(result, cert):
+            logging.info(f"[cert verification suspicious] modern PSA short cert={cert}")
+            result["cert_verified"] = "NO"
+            result["confidence"] = "medium" if result.get("confidence") == "high" else result.get("confidence", "low")
+            return
         result["cert_verified"] = "YES"
         return
 
     logging.info(f"[cert verification mismatch] crop={cert or '?'} verify={verified_cert or '?'} company={company}/{verified_company}")
-    result["cert_number"] = ""
     result["cert_verified"] = "NO"
     result["confidence"] = "medium" if result.get("confidence") == "high" else result.get("confidence", "low")
+
+
+def _is_modern_short_psa_cert(result: dict, cert: str) -> bool:
+    year = str(result.get("year", "") or "")
+    return bool(re.match(r"^20(?:2[4-9]|[3-9]\d)", year) and len(cert) < 9)
+
+
+def _verify_cert_only_sync(gclient: genai.Client, crop_b64: str) -> dict:
+    image_bytes, mime_type = _prepare_image(crop_b64, max_width=1800)
+    response = _generate_with_retry(gclient, image_bytes, mime_type, CERT_ONLY_PROMPT)
+    result = _parse_model_json(response.text.strip(), "cy")
+    result["cert_number"] = "".join(ch for ch in str(result.get("cert_number", "") or "") if ch.isdigit())
+    result["grading_company"] = str(result.get("grading_company", "") or "").strip().upper()
+    result["confidence"] = str(result.get("confidence", "low") or "low").strip().lower()
+    return result
 
 
 def normalize_grade(value: str) -> str:
@@ -523,7 +552,7 @@ def _decode_image(image_b64: str):
     return PIL.Image.open(io.BytesIO(base64.b64decode(image_b64)))
 
 
-def _crop_region_to_base64(image, bbox: list[int], padding_ratio: float = 0.025) -> str:
+def _crop_region_to_base64(image, bbox: list[int], padding_ratio: float = 0.03) -> str:
     x1, y1, x2, y2 = bbox
     width, height = image.size
     left = int(width * x1 / 1000)
