@@ -471,6 +471,16 @@ def _verify_crop_cert(gclient: genai.Client, crop_b64: str, result: dict) -> Non
     verified_company = str(verification.get("grading_company", "") or "").strip().upper()
     company = str(result.get("grading_company", "") or "").strip().upper()
     company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
+    if company == "PSA" and _is_modern_short_psa_cert(result, verified_cert or cert):
+        rotated = _verify_rotated_cert_only_sync(gclient, crop_b64)
+        rotated_cert = "".join(ch for ch in str(rotated.get("cert_number", "") or "") if ch.isdigit())
+        if rotated_cert.startswith(verified_cert or cert) and len(rotated_cert) > len(verified_cert or cert):
+            verified_cert = rotated_cert
+            verified_company = str(rotated.get("grading_company", "") or "").strip().upper() or verified_company
+            company_ok = not verified_company or verified_company == "UNKNOWN" or verified_company == company
+    if verified_cert.startswith(cert) and len(verified_cert) > len(cert):
+        result["cert_number"] = verified_cert
+        cert = verified_cert
     if verified_cert == cert and company_ok:
         if company == "PSA" and _is_modern_short_psa_cert(result, cert):
             logging.info(f"[cert verification suspicious] modern PSA short cert={cert}")
@@ -498,6 +508,26 @@ def _verify_cert_only_sync(gclient: genai.Client, crop_b64: str) -> dict:
     result["grading_company"] = str(result.get("grading_company", "") or "").strip().upper()
     result["confidence"] = str(result.get("confidence", "low") or "low").strip().lower()
     return result
+
+
+def _verify_rotated_cert_only_sync(gclient: genai.Client, crop_b64: str) -> dict:
+    from PIL import Image
+
+    if "," in crop_b64[:100]:
+        crop_b64 = crop_b64.split(",", 1)[1]
+    image = Image.open(io.BytesIO(base64.b64decode(crop_b64)))
+    candidates = []
+    for angle in (-90, 90):
+        rotated = image.rotate(angle, expand=True)
+        buf = io.BytesIO()
+        if rotated.mode not in ("RGB", "L"):
+            rotated = rotated.convert("RGB")
+        rotated.save(buf, format="PNG")
+        try:
+            candidates.append(_verify_cert_only_sync(gclient, base64.b64encode(buf.getvalue()).decode("utf-8")))
+        except Exception as error:
+            logging.info(f"[rotated cert verification skipped] angle={angle} error={str(error)[:140]}")
+    return max(candidates, key=lambda item: len(str(item.get("cert_number", "") or "")), default={})
 
 
 def normalize_grade(value: str) -> str:
