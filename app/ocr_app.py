@@ -32,6 +32,7 @@ from xlsx_export import EXPORT_HEADERS, EXPORT_KEYS, build_export_rows, write_xl
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT / "outputs"
+MANUAL_SOURCE_NAME = "Manual Entry"
 IMAGE_TYPES = [
     ("Image files", "*.png *.jpg *.jpeg *.webp *.bmp"),
     ("All files", "*.*"),
@@ -99,8 +100,9 @@ class CardRow:
 
     def as_export_row(self) -> dict:
         row = {**self.data}
-        row["source_file"] = self.path.name
-        row["file"] = self.path.name
+        source_name = MANUAL_SOURCE_NAME if row.get("manual_entry") else self.path.name
+        row["source_file"] = source_name
+        row["file"] = source_name
         return row
 
 
@@ -242,6 +244,8 @@ class OcrSpreadsheetApp(tk.Tk):
 
         self.delete_button = ttk.Button(bottom, text="Delete Selected", command=self.delete_selected_rows, style="Soft.TButton")
         self.delete_button.pack(side=tk.RIGHT, padx=(8, 0))
+        self.manual_button = ttk.Button(bottom, text="Add Manual Card", command=self.add_manual_card, style="Soft.TButton")
+        self.manual_button.pack(side=tk.RIGHT, padx=(8, 0))
         self.clear_button = ttk.Button(bottom, text="Clear", command=self.clear_rows, style="Soft.TButton")
         self.clear_button.pack(side=tk.RIGHT)
 
@@ -259,7 +263,7 @@ class OcrSpreadsheetApp(tk.Tk):
         self._add_paths(sorted(paths))
 
     def _add_paths(self, paths: list[Path]) -> None:
-        seen = {row.path.resolve() for row in self.rows}
+        seen = {row.path.resolve() for row in self.rows if not row.data.get("manual_entry")}
         added = 0
         for path in paths:
             if not path.exists() or path.resolve() in seen:
@@ -271,12 +275,46 @@ class OcrSpreadsheetApp(tk.Tk):
         self._update_summary()
         self.status_var.set(f"Added {added} photo(s). {len(self.rows)} total queued. Multi-card photos will expand into separate rows after scanning.")
 
+    def add_manual_card(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo("Scan running", "Wait for the scan to finish before adding manual rows.")
+            return
+        row = CardRow(
+            path=Path(MANUAL_SOURCE_NAME),
+            data={
+                "status": "Manual",
+                "quality": 0,
+                "card_index": self._next_manual_card_index(),
+                "position": "MANUAL",
+                "is_graded_slab": True,
+                "grading_company": "",
+                "cert_number": "",
+                "player": "",
+                "year": "",
+                "set": "",
+                "grade": "",
+                "purchase_price": "",
+                "category": "",
+                "confidence": "LOW",
+                "manual_entry": True,
+            },
+        )
+        self.rows.append(row)
+        self._sort_rows()
+        self._refresh_table()
+        self._update_summary()
+        self.status_var.set("Added a manual card row. Double-click cells like Cert #, Player, Set, Grade, or Purchase Price to edit.")
+
     def scan(self) -> None:
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("Scan running", "A scan is already running.")
             return
         if not self.rows:
             messagebox.showinfo("No photos", "Add pictures before scanning.")
+            return
+        source_rows = self._scan_source_rows()
+        if not source_rows:
+            messagebox.showinfo("No photos to scan", "Only manual rows are in the table. You can edit them and export without scanning.")
             return
         if genai is None:
             messagebox.showerror(
@@ -296,27 +334,23 @@ class OcrSpreadsheetApp(tk.Tk):
         self.client = genai.Client(api_key=api_key)
         self.stop_requested = False
         for row in self.rows:
+            if row.data.get("manual_entry"):
+                continue
             if row.data.get("status") in {"Done", "Detected", "Error", "No cards found"}:
                 row.data["status"] = "Queued"
                 row.data["quality"] = 0
-        self.progress.configure(maximum=len(self.rows), value=0)
+        self.progress.configure(maximum=len(source_rows), value=0)
         self._refresh_table()
         self._update_summary()
         self.scan_button.configure(state=tk.DISABLED)
         self.add_button.configure(state=tk.DISABLED)
         self.folder_button.configure(state=tk.DISABLED)
+        self.manual_button.configure(state=tk.DISABLED)
         self.worker = threading.Thread(target=self._scan_worker, daemon=True)
         self.worker.start()
 
     def _scan_worker(self) -> None:
-        source_rows = []
-        seen_paths = set()
-        for row in self.rows:
-            resolved = row.path.resolve()
-            if resolved in seen_paths:
-                continue
-            seen_paths.add(resolved)
-            source_rows.append(row)
+        source_rows = self._scan_source_rows()
         for index, row in enumerate(source_rows):
             if self.stop_requested:
                 break
@@ -381,9 +415,10 @@ class OcrSpreadsheetApp(tk.Tk):
                     self.scan_button.configure(state=tk.NORMAL)
                     self.add_button.configure(state=tk.NORMAL)
                     self.folder_button.configure(state=tk.NORMAL)
-                    readable = sum(1 for row in self.rows if row.data.get("status") == "Done")
-                    detected = sum(1 for row in self.rows if row.data.get("status") in {"Done", "Detected"})
-                    photo_count = len({row.path.resolve() for row in self.rows})
+                    self.manual_button.configure(state=tk.NORMAL)
+                    readable = sum(1 for row in self.rows if row.data.get("status") in {"Done", "Manual"})
+                    detected = sum(1 for row in self.rows if row.data.get("status") in {"Done", "Detected", "Manual"})
+                    photo_count = len({row.path.resolve() for row in self.rows if not row.data.get("manual_entry")})
                     self.status_var.set(
                         f"Scan complete. {detected} slab row(s) detected, {readable} readable row(s), from {photo_count} photo(s)."
                     )
@@ -411,7 +446,7 @@ class OcrSpreadsheetApp(tk.Tk):
         values = []
         for col in DISPLAY_COLUMNS:
             if col == "file":
-                values.append(row.path.name)
+                values.append(MANUAL_SOURCE_NAME if data.get("manual_entry") else row.path.name)
             else:
                 values.append(str(data.get(col, "") or ""))
         return tuple(values)
@@ -423,7 +458,7 @@ class OcrSpreadsheetApp(tk.Tk):
             content_width = header_width
             for row in self.rows[:250]:
                 if col == "file":
-                    value = row.path.name
+                    value = MANUAL_SOURCE_NAME if row.data.get("manual_entry") else row.path.name
                 else:
                     value = str(row.data.get(col, "") or "")
                 content_width = max(content_width, len(value) * 7 + 28)
@@ -509,14 +544,18 @@ class OcrSpreadsheetApp(tk.Tk):
             return "detected"
         if status == "error":
             return "error"
+        if status == "manual":
+            return "detected"
         return "queued"
 
     def _update_summary(self) -> None:
-        photo_count = len({row.path.resolve() for row in self.rows})
-        detected = sum(1 for row in self.rows if row.data.get("status") in {"Done", "Detected"})
-        readable = sum(1 for row in self.rows if row.data.get("status") == "Done")
+        photo_count = len({row.path.resolve() for row in self.rows if not row.data.get("manual_entry")})
+        manual_count = sum(1 for row in self.rows if row.data.get("manual_entry"))
+        detected = sum(1 for row in self.rows if row.data.get("status") in {"Done", "Detected", "Manual"})
+        readable = sum(1 for row in self.rows if row.data.get("status") in {"Done", "Manual"})
         certs = sum(1 for row in self.rows if row.data.get("cert_number"))
-        self.summary_var.set(f"{photo_count} photos | {detected} detected | {readable} readable | {certs} with certs")
+        manual_text = f" | {manual_count} manual" if manual_count else ""
+        self.summary_var.set(f"{photo_count} photos | {detected} detected | {readable} readable | {certs} with certs{manual_text}")
 
     def _quality_score(self, data: dict) -> int:
         score = 0
@@ -556,9 +595,32 @@ class OcrSpreadsheetApp(tk.Tk):
     def _first_row_index_for_path(self, path: Path) -> int | None:
         resolved = Path(path).resolve()
         for index, row in enumerate(self.rows):
+            if row.data.get("manual_entry"):
+                continue
             if row.path.resolve() == resolved:
                 return index
         return None
+
+    def _scan_source_rows(self) -> list[CardRow]:
+        source_rows = []
+        seen_paths = set()
+        for row in self.rows:
+            if row.data.get("manual_entry"):
+                continue
+            resolved = row.path.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            source_rows.append(row)
+        return source_rows
+
+    def _next_manual_card_index(self) -> int:
+        manual_indexes = [
+            int(row.data.get("card_index") or 0)
+            for row in self.rows
+            if row.data.get("manual_entry") and str(row.data.get("card_index") or "").isdigit()
+        ]
+        return max(manual_indexes, default=0) + 1
 
     def _replace_rows_for_path(self, path: Path, cards: list[dict]) -> None:
         resolved = Path(path).resolve()
