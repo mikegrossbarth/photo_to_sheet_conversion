@@ -57,8 +57,8 @@ DETECTION_PROMPT = (
     "Yellow sticky notes, handwritten prices, glare, shadows, screen overlays, or price stickers may cover part of a slab; still return the slab if its holder or label is visible. "
     "Ignore black side bars or phone screenshot padding; they are not part of the slab layout. "
     "Detect slabs from PSA, BGS/Beckett, SGC, CGC, TAG, and unknown grading companies equally. "
+    "Do not assume the cards are arranged in a grid; they may be scattered, tilted, staggered, overlapping, cropped, or in uneven rows. "
     "Never group two adjacent slabs into one bounding box. If two plastic slabs touch edges, they are still two separate slabs. "
-    "For a 2 by 2 grid of slabs, return exactly 4 separate boxes. For a row of 2 slabs, return 2 separate boxes. "
     "Work left-to-right and top-to-bottom. "
     "For each slab, return a bounding box around the entire slab/card holder, not just the label. "
     "Use normalized integer coordinates from 0 to 1000 with [x_min, y_min, x_max, y_max]. "
@@ -225,7 +225,6 @@ def _parse_regions(raw: str) -> list[dict]:
     regions = _orient_region_set(regions)
     regions = _split_wide_regions(regions)
     regions = _dedupe_regions(regions)
-    regions = _fill_simple_grid_gaps(regions)
     regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
     for index, region in enumerate(regions):
         region["card_index"] = index + 1
@@ -339,83 +338,6 @@ def _expand_label_regions(label_regions: list[dict]) -> list[dict]:
             "detection_confidence": region.get("detection_confidence", "medium"),
         })
     return expanded
-
-
-def _center(region: dict) -> tuple[float, float]:
-    x1, y1, x2, y2 = region["bbox"]
-    return ((x1 + x2) / 2, (y1 + y2) / 2)
-
-
-def _cluster_centers(values: list[float], tolerance: float = 115) -> list[float]:
-    centers: list[float] = []
-    for value in sorted(values):
-        for index, center in enumerate(centers):
-            if abs(value - center) <= tolerance:
-                centers[index] = (center + value) / 2
-                break
-        else:
-            centers.append(value)
-    return centers
-
-
-def _nearest(value: float, centers: list[float]) -> int:
-    return min(range(len(centers)), key=lambda index: abs(value - centers[index]))
-
-
-def _fill_simple_grid_gaps(regions: list[dict]) -> list[dict]:
-    if len(regions) < 3:
-        return regions
-
-    x_centers = _cluster_centers([_center(region)[0] for region in regions])
-    y_centers = _cluster_centers([_center(region)[1] for region in regions])
-    grid_size = len(x_centers) * len(y_centers)
-    if (len(x_centers), len(y_centers)) not in {(2, 2), (3, 2), (2, 3)}:
-        return regions
-    if grid_size - len(regions) not in {1, 2}:
-        return regions
-
-    cells: dict[tuple[int, int], dict] = {}
-    for region in regions:
-        cx, cy = _center(region)
-        cell = (_nearest(cy, y_centers), _nearest(cx, x_centers))
-        if cell in cells:
-            return regions
-        cells[cell] = region
-
-    missing = [
-        (row, col)
-        for row in range(len(y_centers))
-        for col in range(len(x_centers))
-        if (row, col) not in cells
-    ]
-    if len(missing) != grid_size - len(regions):
-        return regions
-
-    widths = [region["bbox"][2] - region["bbox"][0] for region in regions]
-    heights = [region["bbox"][3] - region["bbox"][1] for region in regions]
-    width = int(sorted(widths)[len(widths) // 2])
-    height = int(sorted(heights)[len(heights) // 2])
-    inferred_regions = []
-    for row, col in missing:
-        same_col = [region for (r, c), region in cells.items() if c == col]
-        same_row = [region for (r, c), region in cells.items() if r == row]
-        if not same_col and not same_row:
-            return regions
-        template = same_col[0] if same_col else same_row[0]
-        cx = x_centers[col]
-        cy = y_centers[row]
-        inferred_regions.append({
-            **template,
-            "bbox": [
-                max(0, int(cx - width / 2)),
-                max(0, int(cy - height / 2)),
-                min(1000, int(cx + width / 2)),
-                min(1000, int(cy + height / 2)),
-            ],
-            "position": "inferred grid cell",
-            "detection_confidence": "medium",
-        })
-    return regions + inferred_regions
 
 
 def _bbox_iou(a: list[int], b: list[int]) -> float:
@@ -617,7 +539,6 @@ def _detect_regions_sync(gclient: genai.Client, image_bytes: bytes, mime_type: s
     except Exception as error:
         logging.info(f"[label detection skipped] {str(error)[:160]}")
     regions = _dedupe_regions(regions)
-    regions = _fill_simple_grid_gaps(regions)
     regions = _expand_partial_row_regions(regions)
     regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
     for index, region in enumerate(regions):
