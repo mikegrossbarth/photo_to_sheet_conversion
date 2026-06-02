@@ -49,6 +49,7 @@ DISPLAY_COLUMNS = (
     "year",
     "set",
     "grade",
+    "purchase_price",
     "category",
     "confidence",
 )
@@ -67,6 +68,7 @@ COLUMN_HEADINGS = {
     "set": "Set",
     "attributes": "Attributes",
     "grade": "Grade",
+    "purchase_price": "Purchase Price",
     "category": "Sport",
     "confidence": "Confidence",
 }
@@ -84,6 +86,7 @@ COLUMN_WIDTHS = {
     "set": (150, 300),
     "attributes": (150, 320),
     "grade": (64, 84),
+    "purchase_price": (108, 140),
     "category": (90, 120),
     "confidence": (90, 120),
 }
@@ -494,6 +497,8 @@ class OcrSpreadsheetApp(tk.Tk):
             return "".join(ch for ch in value if ch.isdigit())
         if column == "grade":
             return normalize_grade(value)
+        if column == "purchase_price":
+            return value
         return value.upper()
 
     def _row_tag(self, index: int) -> str:
