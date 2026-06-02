@@ -81,6 +81,19 @@ LABEL_DETECTION_PROMPT = (
     "confidence must be high, medium, or low."
 )
 
+LABEL_SWEEP_PROMPT = (
+    "Sweep the entire image for grading label/header strips on visible trading card slabs. "
+    "This is a label-finding task only. Return one box per visible slab label, even if the card image below the label is sideways, partially covered, or less visible. "
+    "Include PSA red/white labels, BGS/Beckett labels, SGC labels, CGC labels, TAG labels, and unknown grading labels. "
+    "Do not skip labels near the left/right image edges, labels partly touching neighboring slabs, or labels on slabs standing in a simple row. "
+    "Never merge neighboring labels into one box. If three grading labels are visible across a row, return three separate label boxes. "
+    "Ignore cardboard boxes, handwriting, price stickers, table/background text, and PSA logos printed at the bottom of holders. "
+    "Use normalized integer coordinates from 0 to 1000 with [x_min, y_min, x_max, y_max]. "
+    "Return JSON only with this exact shape: "
+    '{"cards":[{"card_index": int, "position": str, "bbox": [int, int, int, int], "confidence": str}]}. '
+    "confidence must be high, medium, or low."
+)
+
 CROP_CARD_PROMPT = (
     "You are reading one cropped graded trading card slab/card holder that came from a larger group photo. "
     "The crop may be blurry, tilted, partial, or low resolution. Your job is to extract any visible inventory fields without guessing. "
@@ -621,13 +634,19 @@ def _detect_regions_for_prompt(gclient: genai.Client, image_bytes: bytes, mime_t
 
 def _detect_regions_sync(gclient: genai.Client, image_bytes: bytes, mime_type: str) -> list[dict]:
     regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, DETECTION_PROMPT)
+    label_regions = []
     try:
-        label_regions = _detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_DETECTION_PROMPT)
-        expanded_labels = _expand_label_regions(label_regions)
-        if expanded_labels:
-            regions = _merge_regions(expanded_labels, regions)
+        label_regions.extend(_detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_DETECTION_PROMPT))
     except Exception as error:
         logging.info(f"[label detection skipped] {str(error)[:160]}")
+    try:
+        label_regions.extend(_detect_regions_for_prompt(gclient, image_bytes, mime_type, LABEL_SWEEP_PROMPT))
+    except Exception as error:
+        logging.info(f"[label sweep skipped] {str(error)[:160]}")
+    if label_regions:
+        expanded_labels = _expand_label_regions(_dedupe_regions(label_regions))
+        if expanded_labels:
+            regions = _merge_regions(expanded_labels, regions)
     regions = _dedupe_regions(regions)
     regions = _expand_partial_row_regions(regions)
     regions.sort(key=lambda item: (item["bbox"][1] // 120, item["bbox"][0]))
