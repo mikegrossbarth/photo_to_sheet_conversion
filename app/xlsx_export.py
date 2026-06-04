@@ -41,8 +41,8 @@ EXCLUDED_DESCRIPTION_ATTRIBUTES = {
 
 EXPORT_KEYS = [
     "cert_number",
-    "purchase_price",
     "card_description",
+    "purchase_price",
     "card_number",
     "player",
     "year",
@@ -62,8 +62,8 @@ EXPORT_KEYS = [
 
 EXPORT_HEADERS = [
     "Certification Number",
-    "Purchase Price",
     "Card Description",
+    "Purchase Price",
     "Card Number",
     "Player / Subject",
     "Year",
